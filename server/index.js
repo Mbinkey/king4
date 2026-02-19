@@ -1,24 +1,40 @@
-const express = require('express');
-const cors = require('cors');
-const sqlite3 = require('sqlite3').verbose();
-const { open } = require('sqlite');
-const path = require('path');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
+// Server configuration for Render deployment
+import express from 'express';
+import cors from 'cors';
+import sqlite3 from 'sqlite3';
+import { open } from 'sqlite';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 const SECRET = process.env.JWT_SECRET || 'apex-secret-key-2024';
 
 app.use(cors());
-app.use(express.json());
+// Increase payload size limit to handle base64 images
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Database Setup
 let db;
 
 async function initDB() {
+  // Use /tmp directory for database file in production environments (like Render)
+  // because the app directory is often read-only or ephemeral.
+  // Fallback to local directory for development.
+  const dbPath = process.env.NODE_ENV === 'production' 
+    ? '/tmp/apex.sqlite' 
+    : path.join(__dirname, 'apex.sqlite');
+    
+  console.log(`Initializing database at: ${dbPath}`);
+
   db = await open({
-    filename: path.join(__dirname, 'apex.sqlite'),
+    filename: dbPath,
     driver: sqlite3.Database
   });
 
@@ -92,15 +108,19 @@ async function initDB() {
   `);
 
   // Seed Admin
-  // Remove default admin if exists
-  await db.run('DELETE FROM admins WHERE username = ?', ['admin']);
+  const adminUsername = 'Fod@y@kings auto';
+  const adminPassword = '7727113j';
 
-  const admin = await db.get('SELECT * FROM admins WHERE username = ?', ['Fod@y@kings auto']);
-  if (!admin) {
-    const hash = await bcrypt.hash('7727113j', 10);
-    // Use a unique ID or ensure ID doesn't conflict
-    await db.run('INSERT INTO admins (id, username, passwordHash) VALUES (?, ?, ?)', ['admin-1', 'Fod@y@kings auto', hash]);
-    console.log('Admin seeded');
+  // Check if admin exists
+  const existingAdmin = await db.get('SELECT * FROM admins WHERE username = ?', [adminUsername]);
+  
+  if (!existingAdmin) {
+    // Remove any old admins to be safe/clean
+    await db.run('DELETE FROM admins');
+    
+    const hash = await bcrypt.hash(adminPassword, 10);
+    await db.run('INSERT INTO admins (id, username, passwordHash) VALUES (?, ?, ?)', ['admin-1', adminUsername, hash]);
+    console.log('Admin seeded with new credentials');
   }
 
   console.log('Database initialized');
@@ -122,6 +142,11 @@ const authenticate = (req, res, next) => {
     res.status(401).json({ error: 'Invalid token' });
   }
 };
+
+// Health Check
+app.get('/api/ping', (req, res) => {
+  res.json({ status: 'ok', time: new Date().toISOString() });
+});
 
 // Auth Routes
 app.post('/api/auth/login', async (req, res) => {
@@ -149,22 +174,79 @@ app.get('/api/cars/:id', async (req, res) => {
 });
 
 app.post('/api/cars', authenticate, async (req, res) => {
-  const car = req.body;
-  await db.run(
-    `INSERT INTO cars (id, name, brand, year, price, mileage, engine, horsepower, transmission, topSpeed, acceleration, fuelType, color, description, status, images, featured, createdAt) 
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [car.id, car.name, car.brand, car.year, car.price, car.mileage, car.engine, car.horsepower, car.transmission, car.topSpeed, car.acceleration, car.fuelType, car.color, car.description, car.status, JSON.stringify(car.images), car.featured, car.createdAt]
-  );
-  res.json(car);
+  try {
+    const car = req.body;
+    console.log(`[API] Received request to add car: ${car.name} (${car.id})`);
+    
+    // Ensure images is stringified
+    const imagesStr = Array.isArray(car.images) ? JSON.stringify(car.images) : JSON.stringify([]);
+    
+    await db.run(
+      `INSERT INTO cars (id, name, brand, year, price, mileage, engine, horsepower, transmission, topSpeed, acceleration, fuelType, color, description, status, images, featured, createdAt) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        car.id, 
+        car.name, 
+        car.brand, 
+        car.year, 
+        car.price, 
+        car.mileage, 
+        car.engine, 
+        car.horsepower, 
+        car.transmission, 
+        car.topSpeed, 
+        car.acceleration, 
+        car.fuelType, 
+        car.color, 
+        car.description, 
+        car.status, 
+        imagesStr, 
+        car.featured ? 1 : 0, // Ensure boolean is stored as integer
+        car.createdAt || new Date().toISOString()
+      ]
+    );
+    console.log(`[API] Successfully added car: ${car.id}`);
+    res.json(car);
+  } catch (error) {
+    console.error('[API] Error adding car:', error);
+    res.status(500).json({ error: 'Failed to add car', details: error.message });
+  }
 });
 
 app.put('/api/cars/:id', authenticate, async (req, res) => {
-  const car = req.body;
-  await db.run(
-    `UPDATE cars SET name=?, brand=?, year=?, price=?, mileage=?, engine=?, horsepower=?, transmission=?, topSpeed=?, acceleration=?, fuelType=?, color=?, description=?, status=?, images=?, featured=? WHERE id=?`,
-    [car.name, car.brand, car.year, car.price, car.mileage, car.engine, car.horsepower, car.transmission, car.topSpeed, car.acceleration, car.fuelType, car.color, car.description, car.status, JSON.stringify(car.images), car.featured, req.params.id]
-  );
-  res.json(car);
+  try {
+    const car = req.body;
+    console.log(`[API] Updating car: ${car.id}`);
+    
+    const imagesStr = Array.isArray(car.images) ? JSON.stringify(car.images) : JSON.stringify([]);
+
+    await db.run(
+      `UPDATE cars SET name=?, brand=?, year=?, price=?, mileage=?, engine=?, horsepower=?, transmission=?, topSpeed=?, acceleration=?, fuelType=?, color=?, description=?, status=?, images=?, featured=? WHERE id=?`,
+      [
+        car.name, 
+        car.brand, 
+        car.year, 
+        car.price, 
+        car.mileage, 
+        car.engine, 
+        car.horsepower, 
+        car.transmission, 
+        car.topSpeed, 
+        car.acceleration, 
+        car.fuelType, 
+        car.color, 
+        car.description, 
+        car.status, 
+        imagesStr, 
+        car.featured ? 1 : 0, 
+        req.params.id
+      ]
+    );
+    res.json(car);
+  } catch (error) {
+    console.error('[API] Error updating car:', error);
+    res.status(500).json({ error: 'Failed to update car' });
+  }
 });
 
 app.delete('/api/cars/:id', authenticate, async (req, res) => {
@@ -254,7 +336,8 @@ app.delete('/api/messages/:id', authenticate, async (req, res) => {
 });
 
 // Handle React routing, return all requests to React app
-app.get(/.*/, (req, res) => {
+// Using regex to match all routes safely in newer Express versions
+app.get(/(.*)/, (req, res) => {
   res.sendFile(path.join(__dirname, '../dist', 'index.html'));
 });
 
