@@ -101,7 +101,7 @@ export function Footer() {
               Admin Login
             </Link>
             <p className="text-apex-white-dim text-xs">
-              Crafted with precision and passion.
+              
             </p>
           </div>
         </div>
